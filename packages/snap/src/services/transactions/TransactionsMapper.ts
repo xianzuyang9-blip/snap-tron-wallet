@@ -249,7 +249,7 @@ export class TransactionMapper {
     trc20Type?: string;
   }): TransactionType {
     if (trc20Type === TRC20_APPROVAL_TYPE) {
-      return TransactionType.Unknown;
+      return TransactionType.TokenApprove;
     }
     if (from === accountAddress && to === accountAddress) {
       return TransactionType.Swap; // This is a self-transfer, but in the context of a DEX, it's a swap
