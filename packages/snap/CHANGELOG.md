@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Map TRC20 approval transactions ([#296](https://github.com/MetaMask/snap-tron-wallet/pull/296))
 - Add `FetchStatus.Loading` in `FetchStatus` enum to represent first fetching state and add `isFetchStatusLoadingOrFetching` helper ([#302](https://github.com/MetaMask/snap-tron-wallet/pull/302))
 - Make Confirm button stay enabled after the first security scan even during refresh ([#302](https://github.com/MetaMask/snap-tron-wallet/pull/302))
 
