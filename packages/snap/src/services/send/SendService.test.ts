@@ -104,6 +104,7 @@ describe('SendService', () => {
       mockSnapClient = {
         trackTransactionSubmitted: jest.fn(),
         scheduleBackgroundEvent: jest.fn(),
+        trackError: jest.fn(),
       };
 
       mockTransactionExpirationRefresherService = {
@@ -182,6 +183,24 @@ describe('SendService', () => {
         `Transaction owner_address (${ALT_ADDRESS}) does not match derived signer address (${TEST_FROM_ADDRESS})`,
       );
 
+      expect(mockTronWeb.trx.sign).not.toHaveBeenCalled();
+      expect(mockTronWeb.trx.sendRawTransaction).not.toHaveBeenCalled();
+    });
+
+    it('tracks and rethrows signer mismatch errors', async () => {
+      const expectedMessage = `Transaction owner_address (${ALT_ADDRESS}) does not match derived signer address (${TEST_FROM_ADDRESS})`;
+
+      await expect(
+        sendService.signAndSendTransaction({
+          scope: Network.Mainnet,
+          fromAccountId: TEST_ACCOUNT_ID,
+          transaction: createMockTransaction(ALT_OWNER_HEX) as any,
+        }),
+      ).rejects.toThrow(expectedMessage);
+
+      expect(mockSnapClient.trackError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expectedMessage }),
+      );
       expect(mockTronWeb.trx.sign).not.toHaveBeenCalled();
       expect(mockTronWeb.trx.sendRawTransaction).not.toHaveBeenCalled();
     });
@@ -329,6 +348,7 @@ describe('SendService', () => {
       mockSnapClient = {
         scheduleBackgroundEvent: jest.fn(),
         trackTransactionSubmitted: jest.fn(),
+        trackError: jest.fn(),
       };
 
       mockTransactionExpirationRefresherService = {
