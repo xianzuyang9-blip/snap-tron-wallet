@@ -24,6 +24,10 @@ const mockTronHttpClient = {
   getAccountResources: jest.fn(),
 } as any;
 
+const mockSnapClient = {
+  trackError: jest.fn(),
+} as any;
+
 // Helper to get transaction examples in the expected format
 const getTransactionExample = (type: 'native' | 'trc10' | 'trc20'): any => {
   let mockData;
@@ -110,6 +114,7 @@ describe('FeeCalculatorService', () => {
       logger: mockLogger,
       trongridApiClient: mockTrongridApiClient,
       tronHttpClient: mockTronHttpClient,
+      snapClient: mockSnapClient,
     });
   });
 
@@ -731,6 +736,21 @@ describe('FeeCalculatorService', () => {
         ]);
       });
 
+      it('tracks the error when account activation check fails', async () => {
+        const error = new Error('Account not found or no data returned');
+
+        mockTrongridApiClient.getAccountInfoByAddress.mockRejectedValue(error);
+
+        await feeCalculatorService.computeFee({
+          scope: Network.Mainnet,
+          transaction: getTransactionExample('native'),
+          availableEnergy: ZERO,
+          availableBandwidth: BigNumber(1000000),
+        });
+
+        expect(mockSnapClient.trackError).toHaveBeenCalledWith(error);
+      });
+
       it('adds activation fee to existing TRX cost when recipient is not activated', async () => {
         // Mock the account check to throw (account not found)
         mockTrongridApiClient.getAccountInfoByAddress.mockRejectedValue(
@@ -969,6 +989,43 @@ describe('FeeCalculatorService', () => {
             },
           },
         ]);
+      });
+
+      it('tracks the error when contract info fetch fails', async () => {
+        const error = new Error('Contract info fetch failed');
+
+        mockTronHttpClient.triggerConstantContract.mockResolvedValue({
+          energy_used: 65000,
+          result: { result: true },
+          constant_result: [],
+          transaction: { ret: [{ ret: 'SUCCESS' }] },
+        });
+
+        mockTronHttpClient.getContract.mockRejectedValue(error);
+
+        await feeCalculatorService.computeFee({
+          scope: Network.Mainnet,
+          transaction: getTransactionExample('trc20'),
+          availableEnergy: BigNumber(30000),
+          availableBandwidth: BigNumber(2000000),
+        });
+
+        expect(mockSnapClient.trackError).toHaveBeenCalledWith(error);
+      });
+
+      it('tracks the error when smart contract energy estimation fails', async () => {
+        const error = new Error('Simulation failed');
+
+        mockTronHttpClient.triggerConstantContract.mockRejectedValue(error);
+
+        await feeCalculatorService.computeFee({
+          scope: Network.Mainnet,
+          transaction: getTransactionExample('trc20'),
+          availableEnergy: BigNumber(30000),
+          availableBandwidth: BigNumber(2000000),
+        });
+
+        expect(mockSnapClient.trackError).toHaveBeenCalledWith(error);
       });
 
       it('ignores feeLimit when simulation succeeds', async () => {
@@ -1743,6 +1800,34 @@ describe('FeeCalculatorService', () => {
               fungible: true,
             },
           });
+        });
+
+        it('tracks the error when deployer account fetch fails', async () => {
+          const error = new Error('Network error');
+
+          mockTronHttpClient.triggerConstantContract.mockResolvedValue({
+            energy_used: 80000,
+            result: { result: true },
+            constant_result: [],
+            transaction: { ret: [{ ret: 'SUCCESS' }] },
+          });
+
+          mockTronHttpClient.getContract.mockResolvedValue({
+            origin_address: 'TDeployerAddress123456789012345',
+            consume_user_resource_percent: 50,
+            origin_energy_limit: 100000,
+          });
+
+          mockTronHttpClient.getAccountResources.mockRejectedValue(error);
+
+          await feeCalculatorService.computeFee({
+            scope: Network.Mainnet,
+            transaction: getTransactionExample('trc20'),
+            availableEnergy: BigNumber(0),
+            availableBandwidth: BigNumber(2000000),
+          });
+
+          expect(mockSnapClient.trackError).toHaveBeenCalledWith(error);
         });
 
         it('handles deployer with zero available energy', async () => {

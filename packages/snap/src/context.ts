@@ -119,6 +119,7 @@ const feeCalculatorService = new FeeCalculatorService({
   logger,
   trongridApiClient,
   tronHttpClient,
+  snapClient,
 });
 
 const transactionExpirationRefresherService =
