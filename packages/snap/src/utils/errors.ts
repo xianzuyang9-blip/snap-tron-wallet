@@ -107,11 +107,11 @@ export const withCatchAndThrowSnapError = async <ResponseT>(
     // TODO: Replace `any` with type
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (errorInstance: any) {
+    await snapClient.trackError(errorInstance);
+
     const error = isSnapRpcError(errorInstance)
       ? errorInstance
       : new SnapError(errorInstance);
-
-    await snapClient.trackError(error);
 
     logger.error(
       { error },
