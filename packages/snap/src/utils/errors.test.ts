@@ -3,10 +3,23 @@ import { SnapError } from '@metamask/snaps-sdk';
 import { withCatchAndThrowSnapError } from './errors';
 import logger from './logger';
 
+jest.mock('../clients/snap/SnapClient', () => {
+  const trackError = jest.fn();
+
+  return {
+    trackError,
+    SnapClient: jest.fn().mockImplementation(() => ({
+      trackError,
+    })),
+  };
+});
+
 // Mock the logger to avoid actual console output during tests
 jest.mock('./logger', () => ({
   error: jest.fn(),
 }));
+
+const { trackError } = jest.requireMock('../clients/snap/SnapClient');
 
 describe('errors', () => {
   const mockLogger = logger as jest.Mocked<typeof logger>;
@@ -35,6 +48,23 @@ describe('errors', () => {
       );
 
       expect(mockFn).toHaveBeenCalledTimes(1);
+      expect(mockLogger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('tracks unhandled errors', async () => {
+      const originalError = new Error('Test error');
+      const mockFn = jest.fn().mockRejectedValue(originalError);
+
+      try {
+        await withCatchAndThrowSnapError(mockFn);
+      } catch {
+        // Expected to throw
+      }
+
+      expect(trackError).toHaveBeenCalledTimes(1);
+      expect(trackError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: originalError.message }),
+      );
       expect(mockLogger.error).toHaveBeenCalledTimes(1);
     });
 

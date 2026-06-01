@@ -407,12 +407,7 @@ export class SendService {
         derivationPath: account.derivationPath,
       });
 
-    try {
-      assertTransactionSignerConsistency(transaction.raw_data, signerAddress);
-    } catch (error) {
-      await this.#snapClient.trackError(error as Error);
-      throw error;
-    }
+    assertTransactionSignerConsistency(transaction.raw_data, signerAddress);
 
     const tronWeb = this.#tronWebFactory.createClient(scope, privateKeyHex);
 

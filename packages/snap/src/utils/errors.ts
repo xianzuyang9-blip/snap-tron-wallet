@@ -19,6 +19,9 @@ import {
 } from '@metamask/snaps-sdk';
 
 import logger from './logger';
+import { SnapClient } from '../clients/snap/SnapClient';
+
+const snapClient = new SnapClient({ logger });
 
 /**
  * Sanitizes error messages that may contain sensitive cryptographic information.
@@ -107,6 +110,8 @@ export const withCatchAndThrowSnapError = async <ResponseT>(
     const error = isSnapRpcError(errorInstance)
       ? errorInstance
       : new SnapError(errorInstance);
+
+    await snapClient.trackError(error);
 
     logger.error(
       { error },
