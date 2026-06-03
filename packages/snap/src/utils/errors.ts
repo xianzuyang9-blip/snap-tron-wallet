@@ -99,6 +99,16 @@ export function isSnapRpcError(error: Error): boolean {
   return errors.some((errType) => error instanceof errType);
 }
 
+/**
+ * Determines whether an error should be reported through `snap_trackError`.
+ *
+ * @param error - The error to evaluate.
+ * @returns `true` when the error should be tracked.
+ */
+export function shouldTrackError(error: unknown): boolean {
+  return !(error instanceof UserRejectedRequestError);
+}
+
 export const withCatchAndThrowSnapError = async <ResponseT>(
   fn: () => Promise<ResponseT>,
 ): Promise<ResponseT> => {
@@ -107,7 +117,9 @@ export const withCatchAndThrowSnapError = async <ResponseT>(
     // TODO: Replace `any` with type
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (errorInstance: any) {
-    await snapClient.trackError(errorInstance);
+    if (shouldTrackError(errorInstance)) {
+      await snapClient.trackError(errorInstance);
+    }
 
     const error = isSnapRpcError(errorInstance)
       ? errorInstance

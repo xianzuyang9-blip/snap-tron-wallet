@@ -1,6 +1,6 @@
-import { SnapError } from '@metamask/snaps-sdk';
+import { SnapError, UserRejectedRequestError } from '@metamask/snaps-sdk';
 
-import { withCatchAndThrowSnapError } from './errors';
+import { shouldTrackError, withCatchAndThrowSnapError } from './errors';
 import logger from './logger';
 
 jest.mock('../clients/snap/SnapClient', () => {
@@ -65,6 +65,18 @@ describe('errors', () => {
       expect(trackError).toHaveBeenCalledWith(
         expect.objectContaining({ message: originalError.message }),
       );
+      expect(mockLogger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips tracking user rejected request errors', async () => {
+      const originalError = new UserRejectedRequestError();
+      const mockFn = jest.fn().mockRejectedValue(originalError);
+
+      await expect(withCatchAndThrowSnapError(mockFn)).rejects.toThrow(
+        UserRejectedRequestError,
+      );
+
+      expect(trackError).not.toHaveBeenCalled();
       expect(mockLogger.error).toHaveBeenCalledTimes(1);
     });
 
@@ -202,6 +214,16 @@ describe('errors', () => {
       );
 
       expect(mockLogger.error).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('shouldTrackError', () => {
+    it('returns false for user rejected request errors', () => {
+      expect(shouldTrackError(new UserRejectedRequestError())).toBe(false);
+    });
+
+    it('returns true for other errors', () => {
+      expect(shouldTrackError(new Error('Unexpected error'))).toBe(true);
     });
   });
 });
