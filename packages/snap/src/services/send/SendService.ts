@@ -1,14 +1,17 @@
 import { parseCaipAssetType } from '@metamask/utils';
 import { BigNumber } from 'bignumber.js';
+import { formatUnits } from 'ethers';
 import type { TronWeb } from 'tronweb';
 import type {
   BroadcastReturn,
   Transaction,
+  Transaction as TronTransaction,
   TransferAssetContract,
   TransferContract,
   TriggerSmartContract,
 } from 'tronweb/lib/esm/types';
 
+import { SendValidationError } from './errors';
 import type { FeeCalculatorService } from './FeeCalculatorService';
 import type { SendValidationResult } from './types';
 import type { SnapClient } from '../../clients/snap/SnapClient';
@@ -24,6 +27,16 @@ import { assertTransactionSignerConsistency } from '../../validation/transaction
 import type { AccountsService } from '../accounts/AccountsService';
 import type { AssetsService } from '../assets/AssetsService';
 import type { TransactionExpirationRefresherService } from '../transaction-expiration-refresher/TransactionExpirationRefresherService';
+import type { TransactionDecoder } from '../transactions/TransactionDecoder';
+import type {
+  DecodedTransaction,
+  TransactionRawData,
+} from '../transactions/types';
+
+type TransactionAffordabilitySpend = {
+  asset: AssetEntity;
+  amount: BigNumber;
+};
 
 export class SendService {
   readonly #accountsService: AccountsService;
@@ -38,6 +51,8 @@ export class SendService {
 
   readonly #snapClient: SnapClient;
 
+  readonly #transactionDecoder: TransactionDecoder;
+
   readonly #transactionExpirationRefresherService: TransactionExpirationRefresherService;
 
   constructor({
@@ -47,6 +62,7 @@ export class SendService {
     feeCalculatorService,
     logger,
     snapClient,
+    transactionDecoder,
     transactionExpirationRefresherService,
   }: {
     accountsService: AccountsService;
@@ -55,6 +71,7 @@ export class SendService {
     feeCalculatorService: FeeCalculatorService;
     logger: ILogger;
     snapClient: SnapClient;
+    transactionDecoder: TransactionDecoder;
     transactionExpirationRefresherService: TransactionExpirationRefresherService;
   }) {
     this.#accountsService = accountsService;
@@ -63,6 +80,7 @@ export class SendService {
     this.#feeCalculatorService = feeCalculatorService;
     this.#logger = createPrefixedLogger(logger, '[💸 SendService]');
     this.#snapClient = snapClient;
+    this.#transactionDecoder = transactionDecoder;
     this.#transactionExpirationRefresherService =
       transactionExpirationRefresherService;
   }
@@ -81,7 +99,7 @@ export class SendService {
    * @param params.feeLimit - The feeLimit to set for the built transaction
    * @returns A validation result indicating if the send can proceed.
    */
-  async validateSend({
+  async validateSendAffordability({
     scope,
     fromAccountId,
     toAddress,
@@ -210,6 +228,59 @@ export class SendService {
     }
 
     return { valid: true };
+  }
+
+  async validateTransactionAffordability({
+    scope,
+    fromAccountId,
+    transaction,
+  }: {
+    scope: Network;
+    fromAccountId: string;
+    transaction: TronTransaction;
+  }): Promise<void> {
+    const rawData = transaction.raw_data as TransactionRawData;
+    const decodedTransaction = this.#transactionDecoder.decode(rawData);
+
+    /**
+     * Some dapp-submitted transactions are opaque to this validator, such as
+     * non-trigger contracts, trigger contracts without calldata, or unknown
+     * contract selectors. In those cases we avoid making a partial balance
+     * assertion that could incorrectly block a transaction.
+     */
+    if (this.#transactionDecoder.isValidationSkipped(decodedTransaction)) {
+      return;
+    }
+
+    const feeLimit = this.#getTransactionFeeLimit(rawData);
+
+    /**
+     * Approvals authorize future token movement but do not spend the token in
+     * this transaction, so affordability only needs to cover the TRX fee.
+     */
+    if (this.#transactionDecoder.isFeeOnlyOperation(decodedTransaction)) {
+      await this.#assertTransactionAffordability({
+        scope,
+        fromAccountId,
+        transaction,
+        feeLimit,
+      });
+      return;
+    }
+
+    const spend = await this.#getTrackedTransactionSpend({
+      scope,
+      fromAccountId,
+      decodedTransaction,
+    });
+
+    await this.#assertTransactionAffordability({
+      scope,
+      fromAccountId,
+      transaction,
+      feeLimit,
+      spend,
+    });
   }
 
   async buildTransaction({
@@ -448,6 +519,152 @@ export class SendService {
   }
 
   /**
+   * Asserts that the account can pay a custom dapp-submitted transaction.
+   *
+   * When `spend` is provided, this checks both the decoded asset amount and the
+   * TRX fee. Without `spend`, it treats the transaction as fee-only, which is
+   * used for approvals and decoded spends whose asset is not tracked locally.
+   *
+   * @param options0 - The transaction affordability assertion parameters.
+   * @param options0.scope - The network scope.
+   * @param options0.fromAccountId - The account ID paying for the transaction.
+   * @param options0.transaction - The transaction to inspect for fee costs.
+   * @param options0.feeLimit - The transaction fee limit, if present.
+   * @param options0.spend - The decoded tracked asset spend, if known.
+   */
+  async #assertTransactionAffordability({
+    scope,
+    fromAccountId,
+    transaction,
+    feeLimit,
+    spend,
+  }: {
+    scope: Network;
+    fromAccountId: string;
+    transaction: TronTransaction;
+    feeLimit?: number;
+    spend?: TransactionAffordabilitySpend;
+  }): Promise<void> {
+    const nativeTokenId = Networks[scope].nativeToken.id;
+    const bandwidthId = Networks[scope].bandwidth.id;
+    const energyId = Networks[scope].energy.id;
+    const assetTypes = spend
+      ? [spend.asset.assetType, nativeTokenId, bandwidthId, energyId]
+      : [nativeTokenId, bandwidthId, energyId];
+
+    const assets = await this.#assetsService.getAssetsByAccountId(
+      fromAccountId,
+      assetTypes,
+    );
+
+    const [spendAsset, nativeTokenAsset, bandwidthAsset, energyAsset] = spend
+      ? assets
+      : [null, ...assets];
+
+    if (spend) {
+      const spendAssetBalance = spendAsset
+        ? new BigNumber(spendAsset.uiAmount)
+        : ZERO;
+
+      if (spend.amount.isGreaterThan(spendAssetBalance)) {
+        throw new SendValidationError(SendErrorCodes.InsufficientBalance);
+      }
+    }
+
+    const nativeTokenBalance = nativeTokenAsset
+      ? new BigNumber(nativeTokenAsset.uiAmount)
+      : ZERO;
+    const availableBandwidth = bandwidthAsset
+      ? new BigNumber(bandwidthAsset.rawAmount)
+      : ZERO;
+    const availableEnergy = energyAsset
+      ? new BigNumber(energyAsset.rawAmount)
+      : ZERO;
+
+    const fees = await this.#feeCalculatorService.computeFee({
+      scope,
+      transaction,
+      availableEnergy,
+      availableBandwidth,
+      feeLimit,
+    });
+
+    const trxFee = new BigNumber(
+      fees.find((fee) => fee.asset.type === nativeTokenId)?.asset.amount ?? '0',
+    );
+    const requiredTrx =
+      spend?.asset.assetType === nativeTokenId
+        ? spend.amount.plus(trxFee)
+        : trxFee;
+
+    if (requiredTrx.isGreaterThan(nativeTokenBalance)) {
+      throw new SendValidationError(
+        SendErrorCodes.InsufficientBalanceToCoverFee,
+      );
+    }
+  }
+
+  /**
+   * Returns the spend details for decoded transaction types we can map to a
+   * tracked asset balance, such as TRC20 transfers and supported swap calls.
+   *
+   * Returns `undefined` when the transaction has no immediate asset spend or
+   * when the token exists on-chain but is not tracked by this account.
+   *
+   * @param options0 - The spend lookup parameters.
+   * @param options0.scope - The network scope.
+   * @param options0.fromAccountId - The account ID whose tracked assets are used.
+   * @param options0.decodedTransaction - The decoded transaction to inspect.
+   * @returns The tracked asset spend details, or `undefined` for fee-only validation.
+   */
+  async #getTrackedTransactionSpend({
+    scope,
+    fromAccountId,
+    decodedTransaction,
+  }: {
+    scope: Network;
+    fromAccountId: string;
+    decodedTransaction: DecodedTransaction;
+  }): Promise<TransactionAffordabilitySpend | undefined> {
+    const spendDetails = this.#transactionDecoder.getSpendDetails({
+      decodedTransaction,
+      scope,
+    });
+
+    if (!spendDetails) {
+      return undefined;
+    }
+
+    const asset = await this.#assetsService.getAssetByAccountId(
+      fromAccountId,
+      spendDetails.assetId,
+    );
+
+    /**
+     * Dapps can submit transactions for valid on-chain tokens that are not yet
+     * tracked in this account's local asset list. In that case we cannot compare
+     * the token amount against a known balance, but we can still assert the user
+     * has enough TRX to pay the transaction fees.
+     */
+    if (!asset) {
+      return undefined;
+    }
+
+    return {
+      asset,
+      amount: new BigNumber(
+        formatUnits(spendDetails.rawAmount, asset.decimals),
+      ),
+    };
+  }
+
+  #getTransactionFeeLimit(rawData: TransactionRawData): number | undefined {
+    return typeof rawData.fee_limit === 'number'
+      ? rawData.fee_limit
+      : undefined;
+  }
+
+  /**
    * Applies a fee limit to a TRON transaction and rebuilds its derived fields.
    *
    * When `feeLimit` is provided, this method:
@@ -457,7 +674,7 @@ export class SendService {
    *
    * @param tronWeb - TronWeb instance used to convert the transaction JSON into protobuf form and regenerate transaction metadata.
    * @param transaction - The TRX or TRC10 transfer transaction to update.
-   * @param feeLimit - The fee limit to assign to the transaction in SUN (1 TRX = 1,000,000 SUN). Defaults to FEE_LIMIT (100 TRX).
+   * @param feeLimit - The fee limit to assign to the transaction in SUN (1 TRX = 1,000,000 SUN).
    * If `undefined` or falsy, the transaction is left unchanged.
    */
   #setFeeLimit(

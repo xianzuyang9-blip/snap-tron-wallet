@@ -4,6 +4,7 @@ import { BigNumber } from 'bignumber.js';
 import { TronWeb } from 'tronweb';
 import type { Transaction, TransferContract } from 'tronweb/lib/esm/types';
 
+import { SendValidationError } from './errors';
 import { SendService } from './SendService';
 import { FEE_LIMIT, Network, Networks } from '../../constants';
 import type { AssetEntity } from '../../entities/assets';
@@ -11,6 +12,24 @@ import { SendErrorCodes } from '../../handlers/clientRequest/types';
 import { BackgroundEventMethod } from '../../handlers/cronjob';
 import { mockLogger } from '../../utils/mockLogger';
 import { TransactionExpirationRefresherService } from '../transaction-expiration-refresher/TransactionExpirationRefresherService';
+import type { TransactionDecoder } from '../transactions/TransactionDecoder';
+import {
+  type DecodedTransaction,
+  DecodedTransactionType,
+  DecodedTriggerSmartContractOperationType,
+} from '../transactions/types';
+
+describe('SendValidationError', () => {
+  it('carries a unique send error code', () => {
+    const error = new SendValidationError(
+      SendErrorCodes.InsufficientBalanceToCoverFee,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe('SendValidationError');
+    expect(error.code).toBe(SendErrorCodes.InsufficientBalanceToCoverFee);
+  });
+});
 
 describe('SendService', () => {
   type MockTransferContract =
@@ -38,6 +57,7 @@ describe('SendService', () => {
     let mockSnapClient: any;
     let mockTronWeb: any;
     let mockTransactionExpirationRefresherService: any;
+    let mockTransactionDecoder: jest.Mocked<TransactionDecoder>;
 
     const createMockTransaction = (ownerAddress = TEST_OWNER_HEX) => ({
       visible: false,
@@ -78,6 +98,7 @@ describe('SendService', () => {
 
       mockAssetsService = {
         getAssetsByAccountId: jest.fn(),
+        getAssetByAccountId: jest.fn(),
       };
 
       mockTronWeb = {
@@ -112,6 +133,13 @@ describe('SendService', () => {
         ),
       };
 
+      mockTransactionDecoder = {
+        decode: jest.fn(),
+        isValidationSkipped: jest.fn(),
+        isFeeOnlyOperation: jest.fn(),
+        getSpendDetails: jest.fn(),
+      } as unknown as jest.Mocked<TransactionDecoder>;
+
       sendService = new SendService({
         accountsService: mockAccountsService,
         assetsService: mockAssetsService,
@@ -119,6 +147,7 @@ describe('SendService', () => {
         feeCalculatorService: mockFeeCalculatorService,
         logger: mockLogger,
         snapClient: mockSnapClient,
+        transactionDecoder: mockTransactionDecoder,
         transactionExpirationRefresherService:
           mockTransactionExpirationRefresherService as unknown as TransactionExpirationRefresherService,
       });
@@ -187,7 +216,7 @@ describe('SendService', () => {
     });
   });
 
-  describe('validateSend', () => {
+  describe('validateSendAffordability', () => {
     let sendService: SendService;
     let mockAccountsService: any;
     let mockAssetsService: any;
@@ -198,6 +227,7 @@ describe('SendService', () => {
     let mockTransactionExpirationRefresherService: {
       ensureFreshMetadata: jest.Mock;
     };
+    let mockTransactionDecoder: jest.Mocked<TransactionDecoder>;
 
     const TEST_ACCOUNT_ID = '550e8400-e29b-41d4-a716-446655440000';
     const TEST_TO_ADDRESS = 'TGJn1wnUYHJbvN88cynZbsAz2EMeZq73yx';
@@ -293,6 +323,7 @@ describe('SendService', () => {
 
       mockAssetsService = {
         getAssetsByAccountId: jest.fn(),
+        getAssetByAccountId: jest.fn(),
       };
 
       mockTronWeb = {
@@ -337,6 +368,13 @@ describe('SendService', () => {
         ),
       };
 
+      mockTransactionDecoder = {
+        decode: jest.fn(),
+        isValidationSkipped: jest.fn(),
+        isFeeOnlyOperation: jest.fn(),
+        getSpendDetails: jest.fn(),
+      } as unknown as jest.Mocked<TransactionDecoder>;
+
       sendService = new SendService({
         accountsService: mockAccountsService,
         assetsService: mockAssetsService,
@@ -344,6 +382,7 @@ describe('SendService', () => {
         feeCalculatorService: mockFeeCalculatorService,
         logger: mockLogger,
         snapClient: mockSnapClient,
+        transactionDecoder: mockTransactionDecoder,
         transactionExpirationRefresherService:
           mockTransactionExpirationRefresherService as unknown as TransactionExpirationRefresherService,
       });
@@ -384,7 +423,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -411,7 +450,7 @@ describe('SendService', () => {
           { rawAmount: '0' }, // Energy
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -453,7 +492,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -493,7 +532,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -549,7 +588,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -572,7 +611,7 @@ describe('SendService', () => {
           { rawAmount: '100000' }, // Energy
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -612,7 +651,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -651,7 +690,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -676,7 +715,7 @@ describe('SendService', () => {
           undefined, // No energy
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -715,7 +754,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -769,7 +808,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -814,7 +853,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -859,7 +898,7 @@ describe('SendService', () => {
           },
         ]);
 
-        const result = await sendService.validateSend({
+        const result = await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -871,6 +910,320 @@ describe('SendService', () => {
         expect(result).toStrictEqual({
           valid: false,
           errorCode: SendErrorCodes.InsufficientBalanceToCoverFee,
+        });
+      });
+    });
+
+    describe('validateTransactionAffordability', () => {
+      const createDecodedApproval = (): DecodedTransaction => ({
+        type: DecodedTransactionType.TriggerSmartContract,
+        operation: {
+          type: DecodedTriggerSmartContractOperationType.Trc20Approval,
+          selector: '095ea7b3',
+          contractAddress: 'TToken',
+          spenderAddress: 'TSpender',
+          rawAmount: 1n,
+        },
+      });
+
+      const createDecodedTransfer = (): DecodedTransaction => ({
+        type: DecodedTransactionType.TriggerSmartContract,
+        operation: {
+          type: DecodedTriggerSmartContractOperationType.Trc20Transfer,
+          selector: 'a9059cbb',
+          contractAddress: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+          receiverAddress: TEST_TO_ADDRESS,
+          rawAmount: 5_000_000n,
+        },
+      });
+
+      const createDecodedNativeSwap = (): DecodedTransaction => ({
+        type: DecodedTransactionType.TriggerSmartContract,
+        operation: {
+          type: DecodedTriggerSmartContractOperationType.RangoSwap,
+          selector: '14d08fca',
+          fromTokenAddress: 'native' as const,
+          receiverAddress: TEST_TO_ADDRESS,
+          rawAmountIn: 10_000_000n,
+        },
+      });
+
+      beforeEach(() => {
+        mockTransactionDecoder.decode.mockReturnValue({
+          type: DecodedTransactionType.Unknown,
+        } as DecodedTransaction);
+        mockTransactionDecoder.isValidationSkipped.mockReturnValue(false);
+        mockTransactionDecoder.isFeeOnlyOperation.mockReturnValue(false);
+        mockTransactionDecoder.getSpendDetails.mockReturnValue(undefined);
+      });
+
+      it('returns for unknown decoded transaction without asset or fee lookups', async () => {
+        const transaction = createMockTransaction();
+        const decodedTransaction = {
+          type: DecodedTransactionType.Unknown,
+        } as DecodedTransaction;
+        mockTransactionDecoder.decode.mockReturnValue(decodedTransaction);
+        mockTransactionDecoder.isValidationSkipped.mockReturnValue(true);
+
+        expect(
+          await sendService.validateTransactionAffordability({
+            scope,
+            fromAccountId: TEST_ACCOUNT_ID,
+            transaction,
+          }),
+        ).toBeUndefined();
+
+        expect(mockTransactionDecoder.decode).toHaveBeenCalledWith(
+          transaction.raw_data,
+        );
+        expect(mockAssetsService.getAssetByAccountId).not.toHaveBeenCalled();
+        expect(mockAssetsService.getAssetsByAccountId).not.toHaveBeenCalled();
+        expect(mockFeeCalculatorService.computeFee).not.toHaveBeenCalled();
+      });
+
+      it('returns for unknown contract call without asset or fee lookups', async () => {
+        const transaction = createMockTransaction();
+        const decodedTransaction = {
+          type: DecodedTransactionType.TriggerSmartContract,
+          operation: {
+            type: DecodedTriggerSmartContractOperationType.UnknownContractCall,
+            selector: 'ffffffff',
+          },
+        } as DecodedTransaction;
+        mockTransactionDecoder.decode.mockReturnValue(decodedTransaction);
+        mockTransactionDecoder.isValidationSkipped.mockReturnValue(true);
+
+        expect(
+          await sendService.validateTransactionAffordability({
+            scope,
+            fromAccountId: TEST_ACCOUNT_ID,
+            transaction,
+          }),
+        ).toBeUndefined();
+
+        expect(mockAssetsService.getAssetByAccountId).not.toHaveBeenCalled();
+        expect(mockAssetsService.getAssetsByAccountId).not.toHaveBeenCalled();
+        expect(mockFeeCalculatorService.computeFee).not.toHaveBeenCalled();
+      });
+
+      it('throws InsufficientBalanceToCoverFee for fee-only approval when TRX cannot cover fee', async () => {
+        const transaction = createMockTransaction();
+        mockTransactionDecoder.decode.mockReturnValue(createDecodedApproval());
+        mockTransactionDecoder.isFeeOnlyOperation.mockReturnValue(true);
+        mockAssetsService.getAssetsByAccountId.mockResolvedValue([
+          { uiAmount: '0.5', rawAmount: '500000' },
+          { rawAmount: '0' },
+          { rawAmount: '0' },
+        ]);
+        mockFeeCalculatorService.computeFee.mockResolvedValue([
+          {
+            type: FeeType.Base,
+            asset: {
+              type: nativeTokenId,
+              unit: 'TRX',
+              amount: '1',
+              fungible: true,
+            },
+          },
+        ]);
+
+        await expect(
+          sendService.validateTransactionAffordability({
+            scope,
+            fromAccountId: TEST_ACCOUNT_ID,
+            transaction,
+          }),
+        ).rejects.toMatchObject({
+          name: 'SendValidationError',
+          code: SendErrorCodes.InsufficientBalanceToCoverFee,
+        });
+      });
+
+      it('throws InsufficientBalance when tracked token spend exceeds asset balance', async () => {
+        const transaction = createMockTransaction();
+        const asset = createTrc20Asset();
+        mockTransactionDecoder.decode.mockReturnValue(createDecodedTransfer());
+        mockTransactionDecoder.getSpendDetails.mockReturnValue({
+          assetId: asset.assetType,
+          rawAmount: 5_000_000n,
+        });
+        mockAssetsService.getAssetByAccountId.mockResolvedValue(asset);
+        mockAssetsService.getAssetsByAccountId.mockResolvedValue([
+          { uiAmount: '4', rawAmount: '4000000' },
+          { uiAmount: '10', rawAmount: '10000000' },
+          { rawAmount: '0' },
+          { rawAmount: '0' },
+        ]);
+
+        await expect(
+          sendService.validateTransactionAffordability({
+            scope,
+            fromAccountId: TEST_ACCOUNT_ID,
+            transaction,
+          }),
+        ).rejects.toMatchObject({
+          name: 'SendValidationError',
+          code: SendErrorCodes.InsufficientBalance,
+        });
+
+        expect(mockFeeCalculatorService.computeFee).not.toHaveBeenCalled();
+      });
+
+      it('throws InsufficientBalanceToCoverFee when tracked token spend is covered but TRX fee is not', async () => {
+        const transaction = createMockTransaction();
+        const asset = createTrc20Asset();
+        mockTransactionDecoder.decode.mockReturnValue(createDecodedTransfer());
+        mockTransactionDecoder.getSpendDetails.mockReturnValue({
+          assetId: asset.assetType,
+          rawAmount: 5_000_000n,
+        });
+        mockAssetsService.getAssetByAccountId.mockResolvedValue(asset);
+        mockAssetsService.getAssetsByAccountId.mockResolvedValue([
+          { uiAmount: '5', rawAmount: '5000000' },
+          { uiAmount: '0.5', rawAmount: '500000' },
+          { rawAmount: '0' },
+          { rawAmount: '0' },
+        ]);
+        mockFeeCalculatorService.computeFee.mockResolvedValue([
+          {
+            type: FeeType.Base,
+            asset: {
+              type: nativeTokenId,
+              unit: 'TRX',
+              amount: '1',
+              fungible: true,
+            },
+          },
+        ]);
+
+        await expect(
+          sendService.validateTransactionAffordability({
+            scope,
+            fromAccountId: TEST_ACCOUNT_ID,
+            transaction,
+          }),
+        ).rejects.toMatchObject({
+          name: 'SendValidationError',
+          code: SendErrorCodes.InsufficientBalanceToCoverFee,
+        });
+      });
+
+      it('uses fee-only asset list for untracked decoded spend', async () => {
+        const transaction = createMockTransaction();
+        const asset = createTrc20Asset();
+        mockTransactionDecoder.decode.mockReturnValue(createDecodedTransfer());
+        mockTransactionDecoder.getSpendDetails.mockReturnValue({
+          assetId: asset.assetType,
+          rawAmount: 5_000_000n,
+        });
+        mockAssetsService.getAssetByAccountId.mockResolvedValue(null);
+        mockAssetsService.getAssetsByAccountId.mockResolvedValue([
+          { uiAmount: '10', rawAmount: '10000000' },
+          { rawAmount: '0' },
+          { rawAmount: '0' },
+        ]);
+        mockFeeCalculatorService.computeFee.mockResolvedValue([
+          {
+            type: FeeType.Base,
+            asset: {
+              type: nativeTokenId,
+              unit: 'TRX',
+              amount: '1',
+              fungible: true,
+            },
+          },
+        ]);
+
+        expect(
+          await sendService.validateTransactionAffordability({
+            scope,
+            fromAccountId: TEST_ACCOUNT_ID,
+            transaction,
+          }),
+        ).toBeUndefined();
+
+        expect(mockAssetsService.getAssetsByAccountId).toHaveBeenCalledWith(
+          TEST_ACCOUNT_ID,
+          [nativeTokenId, bandwidthId, energyId],
+        );
+      });
+
+      it('throws InsufficientBalanceToCoverFee when native spend plus fee exceeds native balance', async () => {
+        const transaction = createMockTransaction();
+        const nativeAsset = createNativeAsset();
+        mockTransactionDecoder.decode.mockReturnValue(
+          createDecodedNativeSwap(),
+        );
+        mockTransactionDecoder.getSpendDetails.mockReturnValue({
+          assetId: nativeAsset.assetType,
+          rawAmount: 10_000_000n,
+        });
+        mockAssetsService.getAssetByAccountId.mockResolvedValue(nativeAsset);
+        mockAssetsService.getAssetsByAccountId.mockResolvedValue([
+          { uiAmount: '10', rawAmount: '10000000' },
+          { uiAmount: '10', rawAmount: '10000000' },
+          { rawAmount: '0' },
+          { rawAmount: '0' },
+        ]);
+        mockFeeCalculatorService.computeFee.mockResolvedValue([
+          {
+            type: FeeType.Base,
+            asset: {
+              type: nativeTokenId,
+              unit: 'TRX',
+              amount: '1',
+              fungible: true,
+            },
+          },
+        ]);
+
+        await expect(
+          sendService.validateTransactionAffordability({
+            scope,
+            fromAccountId: TEST_ACCOUNT_ID,
+            transaction,
+          }),
+        ).rejects.toMatchObject({
+          name: 'SendValidationError',
+          code: SendErrorCodes.InsufficientBalanceToCoverFee,
+        });
+      });
+
+      it('passes feeLimit from transaction raw_data to computeFee', async () => {
+        const transaction = createMockTransaction();
+        transaction.raw_data.fee_limit = FEE_LIMIT;
+
+        mockTransactionDecoder.decode.mockReturnValue(createDecodedApproval());
+        mockTransactionDecoder.isFeeOnlyOperation.mockReturnValue(true);
+        mockAssetsService.getAssetsByAccountId.mockResolvedValue([
+          { uiAmount: '2', rawAmount: '2000000' },
+          { rawAmount: '0' },
+          { rawAmount: '0' },
+        ]);
+        mockFeeCalculatorService.computeFee.mockResolvedValue([
+          {
+            type: FeeType.Base,
+            asset: {
+              type: nativeTokenId,
+              unit: 'TRX',
+              amount: '1',
+              fungible: true,
+            },
+          },
+        ]);
+
+        await sendService.validateTransactionAffordability({
+          scope,
+          fromAccountId: TEST_ACCOUNT_ID,
+          transaction,
+        });
+
+        expect(mockFeeCalculatorService.computeFee).toHaveBeenCalledWith({
+          scope,
+          transaction,
+          availableEnergy: expect.any(BigNumber),
+          availableBandwidth: expect.any(BigNumber),
+          feeLimit: FEE_LIMIT,
         });
       });
     });
@@ -899,7 +1252,7 @@ describe('SendService', () => {
           },
         ]);
 
-        await sendService.validateSend({
+        await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -946,7 +1299,7 @@ describe('SendService', () => {
           },
         ]);
 
-        await sendService.validateSend({
+        await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -985,7 +1338,7 @@ describe('SendService', () => {
           },
         ]);
 
-        await sendService.validateSend({
+        await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -1008,7 +1361,7 @@ describe('SendService', () => {
         );
       });
 
-      it('propagates feeLimit through validateSend', async () => {
+      it('propagates feeLimit through validateSendAffordability', async () => {
         const asset = createNativeAsset();
         const amount = new BigNumber(10);
 
@@ -1030,7 +1383,7 @@ describe('SendService', () => {
           },
         ]);
 
-        await sendService.validateSend({
+        await sendService.validateSendAffordability({
           scope,
           fromAccountId: TEST_ACCOUNT_ID,
           toAddress: TEST_TO_ADDRESS,
@@ -1146,6 +1499,7 @@ describe('SendService', () => {
           feeCalculatorService: mockFeeCalculatorService,
           logger: mockLogger,
           snapClient: mockSnapClient,
+          transactionDecoder: mockTransactionDecoder,
           transactionExpirationRefresherService:
             new TransactionExpirationRefresherService({
               tronWebFactory: mockTronWebFactory,
@@ -1241,6 +1595,7 @@ describe('SendService', () => {
           feeCalculatorService: mockFeeCalculatorService,
           logger: mockLogger,
           snapClient: mockSnapClient,
+          transactionDecoder: mockTransactionDecoder,
           transactionExpirationRefresherService:
             new TransactionExpirationRefresherService({
               tronWebFactory: mockTronWebFactory,

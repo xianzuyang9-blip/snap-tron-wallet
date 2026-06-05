@@ -26,6 +26,7 @@ import type { UnencryptedStateValue } from './services/state/State';
 import { State } from './services/state/State';
 import { TransactionExpirationRefresherService } from './services/transaction-expiration-refresher/TransactionExpirationRefresherService';
 import { TransactionScanService } from './services/transaction-scan/TransactionScanService';
+import { TransactionDecoder } from './services/transactions/TransactionDecoder';
 import { TransactionsRepository } from './services/transactions/TransactionsRepository';
 import { TransactionsService } from './services/transactions/TransactionsService';
 import { WalletService } from './services/wallet/WalletService';
@@ -126,6 +127,7 @@ const transactionExpirationRefresherService =
   new TransactionExpirationRefresherService({
     tronWebFactory,
   });
+const transactionDecoder = new TransactionDecoder();
 
 const sendService = new SendService({
   logger,
@@ -134,6 +136,7 @@ const sendService = new SendService({
   assetsService,
   tronWebFactory,
   feeCalculatorService,
+  transactionDecoder,
   transactionExpirationRefresherService,
 });
 

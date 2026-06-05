@@ -13,7 +13,8 @@ import {
   sha256,
 } from '@metamask/utils';
 import { BigNumber } from 'bignumber.js';
-import type { TronWeb, Types } from 'tronweb';
+import type { TronWeb } from 'tronweb';
+import type { Transaction } from 'tronweb/lib/esm/types';
 
 import { ClientRequestMethod, SendErrorCodes } from './types';
 import {
@@ -43,12 +44,15 @@ import type {
   StakedCaipAssetType,
 } from '../../services/assets/types';
 import type { ConfirmationHandler } from '../../services/confirmation/ConfirmationHandler';
+import { SendValidationError } from '../../services/send/errors';
 import type { FeeCalculatorService } from '../../services/send/FeeCalculatorService';
 import type { SendService } from '../../services/send/SendService';
 import type { StakingService } from '../../services/staking/StakingService';
 import type { TransactionExpirationRefresherService } from '../../services/transaction-expiration-refresher/TransactionExpirationRefresherService';
+import { TransactionDecodingError } from '../../services/transactions/errors';
 import { TransactionMapper } from '../../services/transactions/TransactionsMapper';
 import type { TransactionsService } from '../../services/transactions/TransactionsService';
+import type { TransactionRawData } from '../../services/transactions/types';
 import { assertOrThrow } from '../../utils/assertOrThrow';
 import { trxToSun } from '../../utils/conversion';
 import type { ILogger } from '../../utils/logger';
@@ -58,11 +62,6 @@ import {
   assertTransactionStructure,
 } from '../../validation/transaction';
 import { BackgroundEventMethod } from '../cronjob';
-
-type TransactionRawData = Types.Transaction['raw_data'] & {
-  // eslint-disable-next-line @typescript-eslint/naming-convention
-  fee_limit?: number;
-};
 
 export class ClientRequestHandler {
   readonly #logger: ILogger;
@@ -205,98 +204,122 @@ export class ClientRequestHandler {
    * @returns The transaction result with hash and status.
    */
   async #handleSignAndSendTransaction(request: JsonRpcRequest): Promise<Json> {
-    assertOrThrow(
-      request,
-      SignAndSendTransactionRequestStruct,
-      new InvalidParamsError(),
-    );
+    try {
+      assertOrThrow(
+        request,
+        SignAndSendTransactionRequestStruct,
+        new InvalidParamsError(),
+      );
 
-    /**
-     * Transaction here is in base64 format.
-     */
-    const {
-      transaction: transactionBase64,
-      accountId,
-      scope,
-      options: { type },
-    } = request.params;
-
-    const account = await this.#accountsService.findByIdOrThrow(accountId);
-
-    const { privateKeyHex, address: signerAddress } =
-      await this.#accountsService.deriveTronKeypair({
-        entropySource: account.entropySource,
-        derivationPath: account.derivationPath,
-      });
-    const tronWeb = this.#tronWebFactory.createClient(scope, privateKeyHex);
-
-    /**
-     * We need to rebuild the transaction due to some extra fields
-     */
-    // eslint-disable-next-line no-restricted-globals
-    let rawDataHex = Buffer.from(transactionBase64, 'base64').toString('hex');
-    const rawData = tronWeb.utils.deserializeTx.deserializeTransaction(
-      type,
-      rawDataHex,
-    ) as TransactionRawData;
-    rawDataHex = this.#setRawDataFeeLimit(tronWeb, rawData);
-
-    assertTransactionStructure(rawData);
-    assertTransactionSignerConsistency(rawData, signerAddress);
-
-    const txID = bytesToHex(await sha256(hexToBytes(rawDataHex))).slice(2);
-    const transaction = {
       /**
-       * Deserialized transaction always hexadecimal addresses
+       * Transaction here is in base64 format.
        */
-      visible: false,
-      txID,
-      // eslint-disable-next-line @typescript-eslint/naming-convention
-      raw_data: rawData,
-      // eslint-disable-next-line @typescript-eslint/naming-convention
-      raw_data_hex: rawDataHex,
-    };
-
-    const freshTransaction =
-      await this.#transactionExpirationRefresherService.ensureFreshMetadata({
+      const {
+        transaction: transactionBase64,
+        accountId,
         scope,
+        options: { type },
+      } = request.params;
+
+      const account = await this.#accountsService.findByIdOrThrow(accountId);
+
+      const { privateKeyHex, address: signerAddress } =
+        await this.#accountsService.deriveTronKeypair({
+          entropySource: account.entropySource,
+          derivationPath: account.derivationPath,
+        });
+      const tronWeb = this.#tronWebFactory.createClient(scope, privateKeyHex);
+
+      /**
+       * We need to rebuild the transaction due to some extra fields
+       */
+      // eslint-disable-next-line no-restricted-globals
+      let rawDataHex = Buffer.from(transactionBase64, 'base64').toString('hex');
+      const rawData = tronWeb.utils.deserializeTx.deserializeTransaction(
+        type,
+        rawDataHex,
+      ) as TransactionRawData;
+      rawDataHex = this.#setRawDataFeeLimit(tronWeb, rawData);
+
+      assertTransactionStructure(rawData);
+      assertTransactionSignerConsistency(rawData, signerAddress);
+
+      const txID = bytesToHex(await sha256(hexToBytes(rawDataHex))).slice(2);
+      const transaction = {
+        /**
+         * Deserialized transaction always hexadecimal addresses
+         */
+        visible: false,
+        txID,
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        raw_data: rawData,
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        raw_data_hex: rawDataHex,
+      } as Transaction;
+
+      await this.#sendService.validateTransactionAffordability({
+        scope,
+        fromAccountId: accountId,
         transaction,
       });
 
-    const signedTx = await tronWeb.trx.sign(freshTransaction);
-    const result = await tronWeb.trx.sendRawTransaction(signedTx);
+      const freshTransaction =
+        await this.#transactionExpirationRefresherService.ensureFreshMetadata({
+          scope,
+          transaction,
+        });
 
-    if (!result.result) {
-      throw new Error(`Failed to send transaction: ${result.message}`);
-    }
+      const signedTx = await tronWeb.trx.sign(freshTransaction);
+      const result = await tronWeb.trx.sendRawTransaction(signedTx);
 
-    // Immediately create and save a minimal pending transaction
-    // This shows the transaction to the user right away
-    const pendingTransaction = TransactionMapper.createPendingTransaction({
-      txId: result.txid,
-      account,
-      scope,
-    });
+      if (!result.result) {
+        throw new Error(`Failed to send transaction: ${result.message}`);
+      }
 
-    await this.#transactionsService.save(pendingTransaction);
-
-    /**
-     * Track transaction after a transaction
-     */
-    await this.#snapClient.scheduleBackgroundEvent({
-      method: BackgroundEventMethod.TrackTransaction,
-      params: {
+      // Immediately create and save a minimal pending transaction
+      // This shows the transaction to the user right away
+      const pendingTransaction = TransactionMapper.createPendingTransaction({
         txId: result.txid,
+        account,
         scope,
-        accountIds: [accountId],
-        attempt: 0,
-      },
-      duration: 'PT1S',
-    });
+      });
 
-    return {
-      transactionId: result.txid,
-    };
+      await this.#transactionsService.save(pendingTransaction);
+
+      /**
+       * Track transaction after a transaction
+       */
+      await this.#snapClient.scheduleBackgroundEvent({
+        method: BackgroundEventMethod.TrackTransaction,
+        params: {
+          txId: result.txid,
+          scope,
+          accountIds: [accountId],
+          attempt: 0,
+        },
+        duration: 'PT1S',
+      });
+
+      return {
+        transactionId: result.txid,
+      };
+    } catch (error) {
+      if (error instanceof SendValidationError) {
+        return {
+          valid: false,
+          errors: [{ code: error.code }],
+        };
+      }
+
+      if (error instanceof TransactionDecodingError) {
+        return {
+          valid: false,
+          errors: [{ code: SendErrorCodes.Invalid }],
+        };
+      }
+
+      throw error;
+    }
   }
 
   /**
@@ -492,7 +515,7 @@ export class ClientRequestHandler {
      * and all associated fees (including account activation if applicable).
      * This prevents users from confirming sends that we know will fail.
      */
-    const validation = await this.#sendService.validateSend({
+    const validation = await this.#sendService.validateSendAffordability({
       scope,
       fromAccountId,
       toAddress,
